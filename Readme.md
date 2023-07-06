@@ -18,7 +18,7 @@ Usage: retro-server [OPTIONS] ...
 -c, --config-dir=PATH
 </pre>
 
-# Files
+## Files
 <pre>
   .../server-config/
       |__ config.txt
@@ -34,9 +34,9 @@ Usage: retro-server [OPTIONS] ...
           |__ <userid1>.pem
           |__ <userid2>.pem
           |__ ...
+</pre>
 
-
-# Config file
+## Config file
 The config file `config.txt` has the following format:
 <pre>
   [default]
