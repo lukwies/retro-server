@@ -20,19 +20,19 @@ Usage: retro-server [OPTIONS] ...
 
 ## Files
 <pre>
-  .../server-config/
-      |__ config.txt
-      |__ certs/
-      |   |__ key.pem
-      |   |__ cert.pem
-      |__ msg/
-      |   |__ <userid1>.db
-      |   |__ <userid2>.db
+  .../server-config/           Server base config dir
+      |__ config.txt           Config file
+      |__ certs/               Directory for key and cert
+      |   |__ key.pem          Server's private key
+      |   |__ cert.pem         Server's certificate
+      |__ msg/                 Directory holding unsent messages
+      |   |__ USERID_1.db      Sqlitedb with messages for USERID_1
+      |   |__ USERID_2.db      Sqlitedb with messages for USERID_2
       |   |__ ...
-      |__ uploads/
-      |__ users/
-          |__ <userid1>.pem
-          |__ <userid2>.pem
+      |__ uploads/             Directory holding uploaded files
+      |__ users/               Directory holding all user keys
+          |__ USERID_1.pem     Retrokey of USERID_1
+          |__ USERID_2.pem     Retrokey of USERID_2
           |__ ...
 </pre>
 
