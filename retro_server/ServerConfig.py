@@ -23,6 +23,7 @@ class ServerConfig:
 		# [default]
 		self.keyfile   = path_join(basedir, "certs/key.pem")
 		self.certfile  = path_join(basedir, "certs/cert.pem")
+		self.serverdb  = path_join(basedir, "server.db")
 		self.userdir   = path_join(basedir, "users")
 		self.uploaddir = path_join(basedir, "uploads")
 		self.msgdir    = path_join(basedir, "msg")
@@ -43,6 +44,10 @@ class ServerConfig:
 		self.fileserver_port         = 8444
 		self.fileserver_max_filesize = RETRO_MAX_FILESIZE
 		self.fileserver_delete_files = True
+
+		# [audioserver]
+		self.audioserver_enable = False
+		self.audioserver_port   = 8445
 
 
 	def read_file(self):
@@ -88,7 +93,7 @@ class ServerConfig:
 			self.server_port = conf.getint('server', 'port')
 
 			# [fileserver]
-			self.fileserver_enabled = conf.getboolean(
+			self.fileserver_enable = conf.getboolean(
 				'fileserver', 'enabled', fallback=False)
 			self.fileserver_port = conf.getint('fileserver',
 						'port')
@@ -99,6 +104,13 @@ class ServerConfig:
 			self.fileserver_delete_files = conf.getboolean(
 				'fileserver', 'delete_files',
 				fallback=self.fileserver_delete_files)
+
+			# [audioserver]
+			self.audioserver_enable = conf.getboolean(
+				'audioserver', 'enabled',
+				fallback=self.audioserver_enable)
+			self.audioserver_port = conf.getint('audioserver',
+				'port', fallback=self.audioserver_port)
 
 			# Init logging
 			if self.logfile:
@@ -136,10 +148,13 @@ class ServerConfig:
 		LOG.debug("  address        = {}".format(self.server_address))
 		LOG.debug("  port           = {}".format(self.server_port))
 		LOG.debug("[fileserver]")
-		LOG.debug("  enabled        = {}".format(self.fileserver_enabled))
+		LOG.debug("  enabled        = {}".format(self.fileserver_enable))
 		LOG.debug("  port           = {}".format(self.fileserver_port))
 		LOG.debug("  max_filesize   = {}".format(self.fileserver_max_filesize))
 		LOG.debug("  delete_files   = {}".format(self.fileserver_delete_files))
+		LOG.debug("[audioserver]")
+		LOG.debug("  enabled        = {}".format(self.audioserver_enable))
+		LOG.debug("  port           = {}".format(self.audioserver_port))
 
 
 	def loglevel_string_to_level(self, loglevel_str):

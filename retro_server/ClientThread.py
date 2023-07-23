@@ -5,7 +5,9 @@ from threading import Thread
 import logging as LOG
 from base64 import b64encode,b64decode
 
-from libretro.crypto import RetroPublicKey, hash_sha256
+from libretro.protocol import *
+from libretro.crypto import RetroPublicKey
+
 from . MsgStore import MsgStore
 
 """\
@@ -19,162 +21,333 @@ accepted by the RetroServer.
 class ClientThread(Thread):
 
 	def __init__(self, serv, conn):
+		"""\
+		Initialize client thread.
+
+		Args:
+		  serv: RetroServer instance (RetroServer.py)
+		  conn: NetClient instance (libretro.NetClient)
+		"""
 		super().__init__()
 
-		self.serv = serv	# RetroServer instance
-		self.conf = serv.conf	# Configs
-		self.conn = conn	# Connection (TLSConn)
+		self.serv   = serv
+		self.conn   = conn
+		self.conf   = serv.conf
+		self.servDb = serv.servDb
 
-		self.userid  = None	# Clients userid
-		self.frnames = []	# Names of all friends of client
-		self.done    = False
-
+		self.userid = None	# Clients userid
+		self.frids  = []	# ID's of all friends of client
+		self.done   = False	# Is finished ?
 
 	def run(self):
-		if not self.handshake():
-			LOG.debug("User {} disconnected"\
-				.format(self.userid))
+		"""\
+		Runs the client thread.
+		"""
+		try:
+			# Receive initial packet which should either
+			# be T_REGISTER or T_HELLO.
+			pckt = self.conn.recv_packet(
+				timeout_sec=self.conf.recv_timeout)
+			if not pckt: return
+
+			if pckt[0] == Proto.T_HELLO:
+				# Run client mainloop
+				self.start_chatloop(pckt)
+			elif pckt[0] == Proto.T_REGISTER:
+				# Register client
+				self.register_client(pckt)
+			else:
+				LOG.warning("ClientThread.run:"\
+					"Got unknown packet type"\
+					" ({})".format(pckt[0]))
+		except Exception as e:
+			LOG.error("ClientThread.run: "+str(e))
+
+		self.conn.close()
+
+
+	def register_client(self, pckt):
+		"""\
+		Register client.
+		"""
+		LOG.debug("ClientThread.register: started ...")
+		if not pckt[1] or len(pckt[1]) != 32:
+			LOG.warning("ClientThread.register: Invalid"\
+				" packet length ({})".format(len(pckt[1])))
 			return
 
-		LOG.debug("User {} connected".format(self.userid))
+		regkey = pckt[1]
+		LOG.debug("ClientThread.register: regkey={}"\
+			.format(regkey.hex()))
 
+		# Check if regkey exists in database
+		if not self.servDb.regkey_exists(regkey):
+			self.conn.send_packet(Proto.T_ERROR,
+				b"Invalid registration key")
+			return False
+
+		# Generate new userid and send it to client
+		new_userid = self.servDb.get_unique_userid()
+		self.conn.send_packet(Proto.T_SUCCESS, new_userid)
+		LOG.debug("ClientThread.register: sent userid={}"\
+			.format(new_userid.hex()))
+
+		try:
+			# Wait for the client sending its public
+			# key. Timeout is 4 minutes here, since
+			# the client needs to enter some values...
+			pckt = self.conn.recv_packet(
+				timeout_sec=4*60)
+		except Exception as e:
+			LOG.error("ClientThread.register: recv, "+str(e))
+			return False
+
+		if pckt[0] != Proto.T_PUBKEY:
+			LOG.error("ClientThread.register: "\
+				"Got invalid packet type ({})"\
+				.format(pckt[0]))
+			return False
+
+		if not self.create_user(new_userid, pckt[1]):
+			return False
+
+		self.servDb.delete_regkey(regkey)
+		return True
+
+
+	def start_chatloop(self, pckt):
+		"""\
+		Starts the client thread.
+
+		- Perform handshake with client
+		- Send all unreceived messages to client
+		- Forwards/Stores messages until self.done is True
+		"""
+
+		if not self.handshake(pckt):
+			return
+		LOG.debug("User {} connected".format(self.userid.hex()))
 
 		self.serv.conns[self.userid] = self
 		self.send_unreceived_messages()
 
 		while not self.done:
 
-			res = self.recv(['type'])
-			if not res: break
+			try:
+				pckt = self.conn.recv_packet(
+					timeout_sec=self.conf.recv_timeout)
+				if pckt == False: continue
+				elif not pckt: break
 
-			msgtype = res['type']
-
-			if msgtype == 'message':
-				self.forward_message(res)
-			elif msgtype == 'file-message':
-				self.forward_message(res)
-			elif msgtype == 'disconnect':
+			except Exception as e:
+				LOG.error("ClientThread: "+str(e))
 				break
-			elif msgtype == 'friends':
-				self.update_friends(res)
-				self.send_status_to_all_friends('online')
+
+
+			if pckt[0] == Proto.T_CHATMSG:
+				# Forward chat message
+				self.forward_message(pckt)
+
+			elif pckt[0] == Proto.T_FILEMSG:
+				# Forward file message
+				self.forward_message(pckt)
+
+			elif pckt[0] == Proto.T_FRIENDS:
+				# Client queries the connection status
+				# of all it's friends.
+				self.update_friends(pckt)
+				self.send_status_to_all_friends(
+					Proto.T_FRIEND_ONLINE)
+
+			elif pckt[0] == Proto.T_GET_PUBKEY:
+				# Add friend
+				self.add_friend(pckt)
+
+			elif pckt[0] in (Proto.T_START_CALL,
+					 Proto.T_ACCEPT_CALL,
+					 Proto.T_STOP_CALL,
+					 Proto.T_REJECT_CALL):
+				# Messages referring to audio calls, are
+				# forwarded to the receiver directly.
+				to = pckt[1][8:16]
+				if to in self.serv.conns:
+					self.serv.conns[to]\
+						.send_packet(pckt[0], pckt[1])
+
+			elif pckt[0] == Proto.T_GOODBYE:
+				# Disconnect
+				break
+
 			else:
 				LOG.warning("ClientThread.recv: Invalid "\
-					"type '{}'".format(msgtype))
+					"message-type '{}'".format(pckt[0]))
 
 
-		self.send_status_to_all_friends('offline')
-		LOG.debug("User {} disconnected".format(self.userid))
+		self.send_status_to_all_friends(Proto.T_FRIEND_OFFLINE)
+		LOG.debug("User {} disconnected".format(self.userid.hex()))
 
 		# Remove client from self.serv
 		self.serv.conns.pop(self.userid)
 
 
-	def forward_message(self, msg):
-		"""\
-		Forward message-type 'message' and 'file-message'
-		"""
-		to = msg['to']
-		if to not in self.serv.users:
-			# Receipee doesn't exist
-			LOG.debug("Receipee {} doesn't exist!".format(to))
-			self.send({
-				'type' : 'error',
-				'msg'  : "Receiver '{}' doesn't exist!".format(to)
-			})
-		else:
-			if to in self.serv.conns:
-				# Client is online, send message
-				self.serv.conns[to].send(msg)
-			else:
-				# Client is offline, store message
-				LOG.debug("forward_msg: receiver {} "\
-					"is offline".format(to))
-				self.serv.msgStore.store_msg(msg)
-
-
-	def update_friends(self, res):
-		"""\
-		Forward message-type 'friends'.
-		Get the status (online/offline) for all friends in given
-		list (res['friends'])
-		Set friends of client. The friend names are provided
-		by a csv list (key 'friends').
-		"""
-		self.frnames = res['users'].split(',')
-		droplist     = []
-
-		LOG.debug("Forward 'friends' request")
-		for fr in self.frnames:
-			if not fr:
-				continue
-			elif fr not in self.serv.users:
-				status = 'unknown'
-				droplist.append(fr)
-			elif fr in self.serv.conns:
-				status = 'online'
-			else:	status = 'offline'
-
-			LOG.debug(" friend={} status={}".format(fr,status))
-			self.send({
-				'type'   : 'friend-status',
-				'user'   : fr,
-				'status' : status})
-
-		[self.frnames.remove(x) for x in droplist]
-
-
-
-	def handshake(self):
+	def handshake(self, pckt):
 		"""\
 		Perform the handshake.
-		"""
-		cliname = self.conn.hoststring()
+		- Check if user is 'registered'
+		- Load user's pubkey
+		- Verify signature with pubkey
+		- Send T_SUCCESS or T_ERROR
 
-		# Receive login message
-		res = self.recv(['type', 'user', 'nonce', 'sig'],
-				self.conf.recv_timeout)
-		if not res: return False
+		Args:
+		  pckt: T_HELLO packet
+		Return:
+		  True on success, else False
+		"""
+
+		if not pckt[1] or len(pckt[1]) != 8+32+64:
+			LOG.error("ClientThread.handshake: Invalid"\
+				" packet size ({}) expected(104)"\
+				.format(len(pckt[1])))
+			return False
+
+		userid  = pckt[1][:8]
+		useridx = userid.hex()
+		nonce   = pckt[1][8:40]
+		signat  = pckt[1][40:]
 
 		# Check if there's a public key for received userid.
-		path = path_join(self.conf.userdir, res['user']+".pem")
+		path = path_join(self.conf.userdir, useridx+".pem")
 		if not path_exists(path):
-			LOG.debug("Handshake: ({}) {} has no account"\
-				.format(cliname, res['user']))
-			self.send({'type':'error',
-				'msg':"You don't have an account yet"})
+			print("PATH: "+path)
+			LOG.debug("Handshake: {} has no account"\
+				.format(useridx))
+			self.conn.send_packet(Proto.T_ERROR,
+				b"You don't have an account yet")
 			return False
 
 		# Check if user is already connected
-		if res['user'] in self.serv.conns:
+		if userid in self.serv.conns:
 			LOG.debug("Handshake: "\
-				+res['user']+" is already connected")
-			self.send({'type':'error',
-				'msg':"You are already connected"})
+				+useridx+" is already connected")
+			self.conn.send_packet(Proto.T_ERROR,
+				b"You are already connected")
 			return False
-
-		self.userid = res['user']
 
 		# Load clients public key,
 		pubkey = RetroPublicKey()
 		pubkey.load(path)
 
-		# Decode nonce and check if signature matches.
-		nonce = b64decode(res['nonce'])
-		sig_is_ok = pubkey.verify(res['sig'],
-				nonce, True)
+		# Check if signature matches.
+		sig_is_ok = pubkey.verify(signat, nonce)
+
 		if not sig_is_ok:
 			LOG.debug("RetroServer.handshake: "\
 				"Invalid signature !")
-			self.send({'type':'error',
-				'msg':"Permission denied"})
+			self.conn.send_packet(Proto.T_ERROR,
+				b"Permission denied")
 			return False
 		else:
 			# Authenticated :-)
-			self.send({'type':'welcome',
-				'msg': 'Hello '+res["user"]+' :-)'})
+			self.userid = userid
+			self.conn.send_packet(Proto.T_SUCCESS)
 			return True
 
+
+	def forward_message(self, pckt):
+		"""\
+		Forward message-type 'message' and 'file-message'
+		"""
+		if not pckt[1]:
+			LOG.warning("ClientThread.forward_msg: Missing payload")
+			return
+
+		to = pckt[1][8:16]
+
+		if to not in self.serv.users:
+			# Receipee doesn't exist
+			LOG.debug("Receipee {} doesn't exist!".format(to.hex()))
+			self.conn.send_packet(Proto.T_ERROR,
+				"Receiver {} doesn't exist!"\
+				.format(to.hex()).encode())
+		else:
+			if to in self.serv.conns:
+				# Client is online, send message
+				self.serv.conns[to].send_packet(
+					pckt[0], pckt[1])
+			else:
+				# Client is offline, store message
+				LOG.debug("forward_msg: receiver {} "\
+					"is offline".format(to))
+				self.serv.msgStore.store_msg(pckt[0], pckt[1])
+
+
+	def update_friends(self, pckt):
+		"""\
+		Forward message-type T_FRIENDS.
+		Get the status (online/offline) for all friends in given
+		buffer (pckt[1] = friendid_1 + friendid_2 + ...).
+		"""
+		if not pckt[1]: return
+
+		self.frids = []
+
+		LOG.debug("Forward T_FRIENDS request")
+		for i in range(0, len(pckt[1]), 8):
+			frid = pckt[1][i:i+8]
+
+			if frid not in self.serv.users:
+				t = Proto.T_FRIEND_UNKNOWN
+			elif frid in self.serv.conns:
+				t = Proto.T_FRIEND_ONLINE
+				self.frids.append(frid)
+			else:
+				t = Proto.T_FRIEND_OFFLINE
+				self.frids.append(frid)
+
+			LOG.debug(" friend={} status={}".format(frid.hex(),t))
+			self.conn.send_packet(t, frid)
+
+	def add_friend(self, pckt):
+		"""\
+		Client wants to download an other users public
+		key (T_GET_PUBKEY).
+		"""
+		if not pckt[1] or len(pckt[1]) != Proto.USERID_SIZE:
+			LOG.error("ClientThread.add_friend: "\
+				"Invalid packet format")
+			return False
+
+		userid  = pckt[1]
+		pk_path = path_join(self.conf.userdir,
+				userid.hex()+".pem")
+
+		if not self.servDb.user_exists(userid) or \
+		   not path_exists(pk_path):
+			# User doesn't exist
+			self.conn.send_packet(
+				Proto.T_ERROR,
+				"Invalid userid '{}'"\
+				.format(userid.hex()).encode())
+			return False
+
+		try:
+			# Read users pubkey and send it to
+			# client.
+			pk_buf = open(pk_path, "rb").read()
+			self.conn.send_packet(
+				Proto.T_PUBKEY,
+				userid,	pk_buf)
+
+			# Add userid to friends
+			self.frids.append(userid)
+			self.frids = list(set(self.frids))
+
+			return True
+
+		except Exception as e:
+			LOG.error("ClientThread.add_friend: "\
+				+ str(e))
+			return False
 
 	def send_unreceived_messages(self):
 		"""\
@@ -182,7 +355,7 @@ class ClientThread(Thread):
 		"""
 		msgs = self.serv.msgStore.get_msgs(self.userid, True)
 		for msg in msgs:
-			self.send(msg)
+			self.conn.send(msg)
 		LOG.debug("ClientConn: Sent {} unreceived messages"\
 				.format(len(msgs)))
 
@@ -192,18 +365,37 @@ class ClientThread(Thread):
 		Send a messages 'friend-status'
 		to all friends.
 		"""
-		for name in self.frnames:
-			if name in self.serv.conns:
-				self.serv.conns[name].send({
-					'type' : 'friend-status',
-					'user' : self.userid,
-					'status' : status})
+		for frid in self.frids:
+			if frid in self.serv.conns:
+				self.serv.conns[frid]\
+					.send_packet(status, self.userid)
 
 
-	def recv(self, keys=[], timeout_sec=None):
-		return self.conn.recv_dict(keys, timeout_sec=timeout_sec)
+	def create_user(self, userid, pubkey_bytes):
+		"""\
+		Creates a new user.
+		- Store given pubkey to userdir/userid.pem
+		- Add entry in server.db
+		- Send T_SUCCESS or T_ERROR to client
+		"""
+		pk_path = path_join(self.conf.userdir,
+				userid.hex() + ".pem")
 
-	def send(self, dct):
-		return self.conn.send_dict(dct)
+		try:
+			f = open(pk_path, "wb")
+			f.write(pubkey_bytes)
+			f.close()
+
+			self.servDb.add_user(userid)
+			self.conn.send_packet(Proto.T_SUCCESS)
+			return True
+
+		except Exception as e:
+			LOG.error("ClientThread.create_user: "+str(e))
+			self.conn.send_packet(Proto.T_ERROR,
+					b"Internal server error")
+			return False
 
 
+	def send_packet(self, pckt_type, *pckt_data):
+		self.conn.send_packet(pckt_type, *pckt_data)

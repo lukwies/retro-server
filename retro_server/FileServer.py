@@ -3,10 +3,12 @@ from os.path import exists as path_exists
 from os import remove as os_remove
 from os import stat as os_stat
 
+import struct
 import threading
 import logging as LOG
 
-from . TLSListener import TLSListener, TLSConn
+from libretro.protocol import Proto
+from . TLSListener import TLSListener
 
 """\
 The fileserver manages the filetransfers between a client
@@ -34,7 +36,6 @@ class FileServer(threading.Thread):
 
 		# List with TLSConn handles
 		self.conns = []
-
 		# Fileserver is done?
 		self.done = True
 
@@ -59,14 +60,14 @@ class FileServer(threading.Thread):
 
 				# Check if connected user has permissions
 				# to up/download files.
-				if not self.has_permission(conn):
+				if not self.serv.get_conn_by_address(conn.host):
 					LOG.debug("FileServer: No perm "\
-						"{}".format(conn.addr))
+						"{}".format(conn.host))
 					conn.close()
 					continue
 
 				LOG.debug("FileServer: accepted " +\
-					conn.hoststring())
+					conn.tostr())
 
 				# Starting file transfer thread
 				cli = FileTransferThread(self, conn)
@@ -74,7 +75,7 @@ class FileServer(threading.Thread):
 				cli.start()
 
 			except Exception as e:
-				LOG.error("{}".format(e))
+				LOG.error("FileServer.run: "+str(e))
 				self.done = True
 			except KeyboardInterrupt:
 				LOG.error("Interrupted, closing server...")
@@ -85,7 +86,6 @@ class FileServer(threading.Thread):
 
 		for conn in self.conns:
 			try:
-				conn.close()
 				conn.done = True
 				conn.join()
 			except Exception as e:
@@ -93,16 +93,6 @@ class FileServer(threading.Thread):
 
 		return True
 
-
-	def has_permission(self, conn):
-		"""\
-		A client has permissions to up/download files,
-		if it's already connected to the (main)server.
-		"""
-		for c in self.serv.conns.values():
-			if c.conn.addr[0] == conn.addr[0]:
-				return True
-		return False
 
 
 class FileTransferThread(threading.Thread):
@@ -125,20 +115,16 @@ class FileTransferThread(threading.Thread):
 		LOG.debug("FileServer: waiting for initial packet ...")
 
 		# Receive initial packet (type,fileid,size)
-		msg = self.__recv_initial_packet()
-		if not msg: return
-
-		fileid  = msg['fileid']
-		msgtype = msg['type']
+		pckt = self.__recv_initial_packet()
+		if not pckt: return
 
 		# Start up/download
 		try:
-			if msgtype == 'file-upload':
-				self.do_upload(fileid, msg['size'])
-			elif msgtype == 'file-download':
-				self.do_download(fileid)
+			if pckt[0] == Proto.T_FILE_UPLOAD:
+				self.do_upload(pckt)
+			else:	self.do_download(pckt)
 		except Exception as e:
-			LOG.error(str(e))
+			LOG.error("FileTransferThread: "+str(e))
 
 		# Close connection and remove it from connection
 		# dictionary.
@@ -146,23 +132,25 @@ class FileTransferThread(threading.Thread):
 		self.fserv.conns.remove(self)
 
 
-	def do_upload(self, fileid, filesize):
+	def do_upload(self, pckt):
 		"""\
 		Do a fileupload.
 		"""
-		timeout   = self.conf.recv_timeout
-		filepath = path_join(self.conf.uploaddir,
-				fileid)
+		fileid   = pckt[1][:16]
+		filesize = struct.unpack('!I', pckt[1][16:])[0]
+		filepath = path_join(self.conf.uploaddir, fileid.hex())
+		timeout  = self.conf.recv_timeout
 
 		LOG.debug("FileServer: uploading file " + filepath)
 
 		# Try to open file for storing contents
 		try:
 			fout = open(filepath, "wb")
-			self.conn.send_dict({'type':'ok'})
+			self.conn.send_packet(Proto.T_SUCCESS)
+#			self.conn.send_dict({'type':'ok'})
 		except Exception as e:
-			self.conn.send_dict({'type':'error',
-				'msg': 'Failed to upload, internal server error'})
+			self.conn.send_packet(Proto.T_ERROR,
+				b"Internal server error")
 			LOG.error("FileServer.upload: Failed to open {}"\
 				.format(filepath))
 			return
@@ -172,16 +160,14 @@ class FileTransferThread(threading.Thread):
 		while nrecv < filesize:
 			try:
 				buf = self.conn.recv(
-					timeout_sec=self.conf.recv_timeout)
+					max_bytes=filesize-nrecv,
+					timeout_sec=10)
 				if not buf: break
 				fout.write(buf)
 				nrecv += len(buf)
 
 			except Exception as e:
 				LOG.warning("FileServer.upload: recv, " + str(e))
-				self.conn.send_dict({'type':'error',
-					'msg': 'Failed to upload, '\
-						'internal server error'})
 				break
 		fout.close()
 
@@ -190,36 +176,37 @@ class FileTransferThread(threading.Thread):
 			LOG.warning("Failed to upload complete file. "\
 				"Stopped at {}/{}".format(nrecv, filesize))
 			os_remove(filepath)
-			self.conn.send_dict({'type':'error',
-				'msg': 'Failed to upload, '\
-				'only uploaded {}/{} bytes'\
-				.format(nrecv,filesize) })
+			self.conn.send_packet(Proto.T_ERROR,
+				"Failed, only uploaded "\
+				"{}/{} bytes".format(nrecv,filesize)\
+				.encode())
 		else:
 			LOG.debug("Uploaded {} byte, file '{}'"\
 				.format(filesize, filepath))
-			self.conn.send_dict({'type':'ok'})
+			self.conn.send_packet(Proto.T_SUCCESS)
 
 
-	def do_download(self, fileid):
+	def do_download(self, pckt):
 		"""\
 		Do the file download (Send file to client).
 		"""
+		fileid   = pckt[1]
 		filepath = path_join(self.conf.uploaddir,
-				fileid)
+				fileid.hex())
 		LOG.debug("FileServer: downloading file " + filepath)
 
 		# Try to open file for sending
 		try:
 			fin  = open(filepath, "rb")
 			size = os_stat(filepath).st_size
-			self.conn.send_dict({'type':'ok',
-				'size':size})
-			LOG.debug("FileServer: Sending: 'type':'ok',"\
-				" 'size':{}".format(size))
+			self.conn.send_packet(Proto.T_SUCCESS,
+				struct.pack('!I', size))
+			LOG.debug("FileServer: Sending: T_SUCCESS,"\
+				" filesize={}".format(size))
 		except Exception as e:
-			self.conn.send_dict({'type':'error',
-				'msg': 'Requested file doesn\'t exist'})
-			LOG.error("FileServer.upload: Failed to open {}"\
+			self.conn.send_packet(Proto.T_ERROR,
+				b"Requested file doesn\'t exist")
+			LOG.error("FileServer.download: Failed to open {}"\
 				.format(filepath))
 			return
 
@@ -263,21 +250,21 @@ class FileTransferThread(threading.Thread):
 		Raises:
 		  Exception: select,recv,type error
 		"""
-		res = self.conn.recv_dict(keys=['type','fileid'],
+
+		try:
+			pckt = self.conn.recv_packet(
 				timeout_sec=self.conf.recv_timeout)
-		if not res:
-			LOG.error("FileServer.__recv_initial_packet: "\
-				"{}".format('timeout' if res==False else 'select error'))
+		except Exception as e:
+			LOG.error("FileServer.__recv_initial_packet: "+str(e))
 			return None
 
-		elif res['type'] not in ('file-upload', 'file-download'):
-			LOG.error("FileServer.__recv_initial_packet: "\
-				"Invalid msg-type '{}'".format(res['type']))
+		if not pckt:
+			LOG.error("FileServer.__recv_initial_packet: timeout")
 			return None
 
-		elif res['type'] == 'file-upload' and 'size' not in res:
+		elif pckt[0] not in (Proto.T_FILE_UPLOAD, Proto.T_FILE_DOWNLOAD):
 			LOG.error("FileServer.__recv_initial_packet: "\
-					"Missing key 'size'")
+				"Invalid msg-type '{}'".format(pckt[0]))
 			return None
 
-		return res
+		return pckt

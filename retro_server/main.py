@@ -21,6 +21,7 @@ HELP="""\
   -v, --version                 Show retrochat version
 
   -c, --config-dir=PATH		Basedirectory
+  -R, --create-regkey=PATH	Create registration keyfile
 """
 
 
@@ -29,10 +30,11 @@ def main():
 
 	argv = sys.argv[1:]
 	basedir = None
+	regkey_file = None
 
 	try:
-		opts,rem = getopt(argv, 'c:h',
-			['help', 'config='])
+		opts,rem = getopt(argv, 'c:hR:',
+			['help', 'config=','create-regkey='])
 
 	except GetoptError as ge:
 		print('Error: {}'.format(ge))
@@ -42,8 +44,12 @@ def main():
 		if opt in ('-h', '--help'):
 			print(HELP)
 			return True
+
 		elif opt in ('-c', '--config'):
 			basedir = arg
+
+		elif opt in ('-R', '--create-regkey'):
+			regkey_file = arg
 
 	if not basedir:
 		print("! Missing basedir (-c <basedir>)")
@@ -55,7 +61,10 @@ def main():
 		return False
 
 	server = RetroServer(config)
-	server.run()
+
+	if regkey_file:
+		server.create_registration_key(regkey_file)
+	else:	server.run()
 
 
 if __name__ == '__main__':
