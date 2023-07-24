@@ -152,6 +152,23 @@ class RetroServer:
 				return conn
 		return None
 
+	def get_user_status(self, userid):
+		"""\
+		Returns status of user.
+		Args:
+		  userid: Id of user (8 byte)
+		Return:
+		  status:
+			Proto.T_FRIEND_ONLINE
+			Proto.T_FRIENT_OFFLINE
+			Proto.T_FRIENT_UNKNOWN
+		"""
+		if userid not in self.users:
+			return Proto.T_FRIEND_UNKNONW
+		elif userid in self.conns:
+			return Proto.T_FRIEND_ONLINE
+		else:	return Proto.T_FRIEND_OFFLINE
+
 
 	def __start_servers(self):
 		"""\

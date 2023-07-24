@@ -2,6 +2,7 @@ import json
 from os.path import join as path_join
 from os.path import exists as path_exists
 from threading import Thread
+from time import sleep as time_sleep
 import logging as LOG
 from base64 import b64encode,b64decode
 
@@ -70,18 +71,18 @@ class ClientThread(Thread):
 		"""\
 		Register client.
 		"""
-		LOG.debug("ClientThread.register: started ...")
+		LOG.debug("ClientThread.register: started")
 		if not pckt[1] or len(pckt[1]) != 32:
 			LOG.warning("ClientThread.register: Invalid"\
 				" packet length ({})".format(len(pckt[1])))
 			return
 
 		regkey = pckt[1]
-		LOG.debug("ClientThread.register: regkey={}"\
-			.format(regkey.hex()))
 
 		# Check if regkey exists in database
 		if not self.servDb.regkey_exists(regkey):
+			LOG.warning("ClientThread.register: "\
+				" invalid regkey!!")
 			self.conn.send_packet(Proto.T_ERROR,
 				b"Invalid registration key")
 			return False
@@ -89,8 +90,6 @@ class ClientThread(Thread):
 		# Generate new userid and send it to client
 		new_userid = self.servDb.get_unique_userid()
 		self.conn.send_packet(Proto.T_SUCCESS, new_userid)
-		LOG.debug("ClientThread.register: sent userid={}"\
-			.format(new_userid.hex()))
 
 		try:
 			# Wait for the client sending its public
@@ -111,7 +110,14 @@ class ClientThread(Thread):
 		if not self.create_user(new_userid, pckt[1]):
 			return False
 
+		# Add user to RetroServer.users
+		self.serv.users.append(new_userid)
+
+		# Delete registration key from db
 		self.servDb.delete_regkey(regkey)
+
+		LOG.debug("ClientThread.register: registered user {}"\
+			.format(new_userid.hex()))
 		return True
 
 
@@ -218,7 +224,6 @@ class ClientThread(Thread):
 		# Check if there's a public key for received userid.
 		path = path_join(self.conf.userdir, useridx+".pem")
 		if not path_exists(path):
-			print("PATH: "+path)
 			LOG.debug("Handshake: {} has no account"\
 				.format(useridx))
 			self.conn.send_packet(Proto.T_ERROR,
@@ -261,14 +266,15 @@ class ClientThread(Thread):
 			LOG.warning("ClientThread.forward_msg: Missing payload")
 			return
 
-		to = pckt[1][8:16]
+		to  = pckt[1][8:16]
+		tox = to.hex()
 
 		if to not in self.serv.users:
 			# Receipee doesn't exist
-			LOG.debug("Receipee {} doesn't exist!".format(to.hex()))
+			LOG.debug("Receipee {} doesn't exist!".format(tox))
 			self.conn.send_packet(Proto.T_ERROR,
 				"Receiver {} doesn't exist!"\
-				.format(to.hex()).encode())
+				.format(tox).encode())
 		else:
 			if to in self.serv.conns:
 				# Client is online, send message
@@ -277,7 +283,7 @@ class ClientThread(Thread):
 			else:
 				# Client is offline, store message
 				LOG.debug("forward_msg: receiver {} "\
-					"is offline".format(to))
+					"is offline".format(tox))
 				self.serv.msgStore.store_msg(pckt[0], pckt[1])
 
 
@@ -293,19 +299,16 @@ class ClientThread(Thread):
 
 		LOG.debug("Forward T_FRIENDS request")
 		for i in range(0, len(pckt[1]), 8):
-			frid = pckt[1][i:i+8]
+			friend_id = pckt[1][i:i+8]
+			status = self.serv.get_user_status(friend_id)
 
-			if frid not in self.serv.users:
-				t = Proto.T_FRIEND_UNKNOWN
-			elif frid in self.serv.conns:
-				t = Proto.T_FRIEND_ONLINE
-				self.frids.append(frid)
-			else:
-				t = Proto.T_FRIEND_OFFLINE
-				self.frids.append(frid)
+			if status != Proto.T_FRIEND_UNKNOWN:
+				self.frids.append(friend_id)
 
-			LOG.debug(" friend={} status={}".format(frid.hex(),t))
-			self.conn.send_packet(t, frid)
+			LOG.debug(" friend={} status={}".format(
+				friend_id.hex(), status))
+			self.conn.send_packet(status, friend_id)
+
 
 	def add_friend(self, pckt):
 		"""\
@@ -341,6 +344,12 @@ class ClientThread(Thread):
 			# Add userid to friends
 			self.frids.append(userid)
 			self.frids = list(set(self.frids))
+
+			# Send status of new friend to client
+			time_sleep(.2)
+			self.conn.send_packet(
+				self.serv.get_user_status(userid),
+				userid)
 
 			return True
 

@@ -46,8 +46,9 @@ function create_config_file() {
 	echo "To create the base config file ~/.retro/config.txt,"
 	echo "we need you to provide some information..."
 	echo
-	echo -n "Server port:     "; read serv_port; if [ -z $serv_port ]; then exit; fi
-	echo -n "Fileserver port: "; read fileserv_port; if [ -z $fileserv_port ]; then exit; fi
+	echo -n "Server port:      "; read serv_port; if [ -z $serv_port ]; then exit; fi
+	echo -n "Fileserver port:  "; read fileserv_port; if [ -z $fileserv_port ]; then exit; fi
+	echo -n "Audioserver port: "; read audioserv_port; if [ -z $audioserv_port ]; then exit; fi
 
 	# Create config file ...
 	echo "# This is the base configuration file of the retro server." > $file
@@ -77,6 +78,10 @@ function create_config_file() {
 	echo "#max_filesize=0x40000000" >> $file
 	echo "#delete_files = True" >> $file
 	echo "#enabled = True" >> $file
+	echo >> $file
+	echo "[audioserver]" >> $file
+	echo "port = $audioserv_port" >> $file
+	echo "enabled = True" >> $file
 	echo
 	ok "Created config file '$file'"
 }

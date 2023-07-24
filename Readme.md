@@ -6,6 +6,7 @@ The retro server.<br>
 
 ## Install
 <pre>
+$ pip install --upgrade pip
 $ pip install .
 $ ./install.sh SERVER_DIRECTORY
 </pre>
@@ -14,8 +15,11 @@ $ ./install.sh SERVER_DIRECTORY
 <pre>
 Usage: retro-server [OPTIONS] ...
 
--h, --help
--c, --config-dir=PATH
+-h, --help                  Show help text
+-c, --config-dir=PATH       Set path to server config directory
+-R, --create-regkey=PATH    Create registration key and store it
+                            to given file.
+
 </pre>
 
 ## Files
@@ -29,6 +33,7 @@ Usage: retro-server [OPTIONS] ...
       |   |__ USERID_1.db      Sqlitedb with messages for USERID_1
       |   |__ USERID_2.db      Sqlitedb with messages for USERID_2
       |   |__ ...
+      |__ server.db            Database for userids/regkeys
       |__ uploads/             Directory holding uploaded files
       |__ users/               Directory holding all user keys
           |__ USERID_1.pem     Retrokey of USERID_1
@@ -58,6 +63,9 @@ The config file `config.txt` has the following format:
   port = PORT
   max_filesize = BYTES
   delete_files = BOOL
+  [audioserver]
+  enabled = BOOL
+  port = PORT
 </pre>
 
 
