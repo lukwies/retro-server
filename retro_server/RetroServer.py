@@ -1,13 +1,15 @@
-from os.path import join as path_join
-from os.path import exists as path_exists
-from os import listdir as os_listdir
-import logging as LOG
+import os
+import sys
+import signal
+
 from ssl import SSLError
 from base64 import b64encode,b64decode
+import logging
 
 from libretro.crypto import RetroPublicKey
 from libretro.RegKey import RegKey
 
+from . ServerConfig import *
 from . TLSListener import TLSListener
 from . FileServer import *
 from . AudioServer import *
@@ -37,27 +39,33 @@ from . ClientThread import ClientThread
  |__ server.db		# Database with users and regkeys (see ServerDb.py)
 """
 
-LOGFMT = '%(levelname)s  %(message)s'
+LOG = logging.getLogger()
 
 
 class RetroServer:
 
-	def __init__(self, config):
+	def __init__(self, config_dir):
 		"""\
 		The retro server.
 		Args:
 		  config_dir: Path to config directory
 		  loglevel:   Logging level
 		"""
-		self.conf = config
+		# Server configs
+		self.conf = ServerConfig(config_dir)
 
-		# The server's TLS context.
-		self.serv = TLSListener(config, 'server')
+		# The chatserver listening context
+		self.serv = TLSListener(self.conf, 'server')
 
 		# The fileserver context (type=FileServer).
 		# This will be initialized by self.start_servers()
 		# if self.conf.fileserver_enable is True.
 		self.fileserv = None
+
+		# Audioserver context (type=AudioServer)
+		# This will be initialized by self.start_servers()
+		# if self.conf.audioserver_enabled is True.
+		self.audioserv = None
 
 		# All 'registered' users
 		self.users = self.get_all_users()
@@ -71,6 +79,9 @@ class RetroServer:
 
 		# Server database (users, regkeys)
 		self.servDb = ServerDb(self)
+
+		# Server is done?
+		self.done = False
 
 
 	def create_registration_key(self, filename):
@@ -90,6 +101,18 @@ class RetroServer:
 			return False
 
 
+	def load(self):
+		"""\
+		Load the server config file, setup logger, ...
+		"""
+		# Load configs
+		if not self.conf.read_file():
+			return False
+
+		self.init_logger()
+		return True
+
+
 	def run(self):
 		"""\
 		Run retro server.
@@ -98,7 +121,7 @@ class RetroServer:
 		if not self.__start_servers():
 			return False
 
-		while True:
+		while not self.done:
 			try:
 				# Accept client and start client thread
 				conn = self.serv.accept(
@@ -122,25 +145,24 @@ class RetroServer:
 				LOG.error("Interrupted, closing server...")
 				break
 
+		self.done = True
 		self.__close()
-		return True
 
+		return True
 
 
 	def get_all_users(self):
 		"""\
 		Return a list with all 'registered' users.
 		"""
-		LOG.debug("All users:")
 		users = []
-		for f in os_listdir(self.conf.userdir):
+		for f in os.listdir(self.conf.userdir):
 			if f.endswith('.pem'):
 				useridx = f.replace('.pem', '')
 				userid  = bytes.fromhex(useridx)
 				users.append(userid)
-
-				LOG.debug("> " + useridx)
 		return users
+
 
 	def get_conn_by_address(self, address):
 		"""\
@@ -170,14 +192,55 @@ class RetroServer:
 		else:	return Proto.T_FRIEND_OFFLINE
 
 
+	def init_logger(self):
+		"""\
+		Setup the logger.
+		If server runs as a daemon all logs are written to
+		a file (ServerConfig.logfile) otherwise ot stdout.
+		"""
+		# Setup logger
+		if self.conf.daemonize:
+			fh  = logging.FileHandler(self.conf.logfile, mode='w')
+			fmt = logging.Formatter(
+				"%(asctime)s %(levelname)s %(name)s "\
+				"%(message)s", datefmt="%H:%M:%S")
+		else:
+			fh  = logging.StreamHandler(sys.stdout)
+			fmt = logging.Formatter(
+				"%(asctime)s  %(levelname)s  "\
+				"%(message)s", datefmt="%H:%M:%S")
+
+		fh.setFormatter(fmt)
+		fh.setLevel(self.conf.loglevel)
+
+		LOG = logging.getLogger()
+		LOG.addHandler(fh)
+		LOG.setLevel(self.conf.loglevel)
+
+
+	#--- PRIVATE ---------------------------------------------------------
+
 	def __start_servers(self):
 		"""\
 		Start the chatserver, fileserver and audioserver.
 		"""
 
+		if self.conf.daemonize:
+			# Start the daemon process
+			try:
+				self.__daemonize()
+			except Exception as e:
+				LOG.error("Daemonize: " + str(e))
+				return False
+
 		LOG.info("Starting Retroserver ...")
 		self.conf.debug()
-		LOG.info("Listening at {}:{} ...".format(
+
+		hex_user_ids = [id.hex() for id in self.users]
+		LOG.debug("Users: [{}]".format(
+			", ".join(hex_user_ids)))
+
+		LOG.info("Starting chatserver at {}:{} ...".format(
 			self.conf.server_address,
 			self.conf.server_port))
 
@@ -227,3 +290,65 @@ class RetroServer:
 		LOG.info("Shutting down chatserver")
 		self.serv.close()
 
+		# Delete pidfile (if exists)
+		try: os.remove(self.conf.pidfile)
+		except:	pass
+
+
+	def __daemonize(self):
+		"""\
+		Daemonize process
+
+		- chdir self.conf.rundir
+		"""
+		if os.path.exists(self.conf.pidfile):
+			raise Exception("retro-server is already running!")
+
+		# Do 1th fork
+		try:
+			pid = os.fork()
+			if pid > 0:
+				sys.exit(0)
+		except OSError as e:
+			LOG.error("fork failed, "+str(e))
+			sys.exit(1)
+
+		# Detach from parent environment
+		os.chdir(self.conf.daemondir)
+		os.umask(0)
+		os.setsid()
+
+		# Do 2nd fork
+		try:
+			pid = os.fork()
+			if pid > 0:
+				sys.exit(0)
+		except OSError as e:
+			LOG.error("fork failed, "+str(e))
+			sys.exit(1)
+
+		# Close standard streams
+		sys.stdout.flush()
+		sys.stderr.flush()
+
+		si = open("/dev/null", 'r')
+		so = open("/dev/null", 'a+')
+		se = open("/dev/null", 'a+')
+
+		os.dup2(si.fileno(), sys.stdin.fileno())
+		os.dup2(so.fileno(), sys.stdout.fileno())
+		os.dup2(se.fileno(), sys.stderr.fileno())
+
+		# Set signal handling
+		def stop_server(*args):
+			self.done = True
+
+		signal.signal(signal.SIGTERM, stop_server)
+		signal.signal(signal.SIGHUP, stop_server)
+
+		# Create pidfile
+		with open(self.conf.pidfile, 'w', encoding='utf-8') as f:
+			f.write(str(os.getpid()))
+
+		self.init_logger()
+		LOG.info("Daemon started ...")
