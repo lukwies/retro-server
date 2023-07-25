@@ -1,10 +1,13 @@
 from os.path import join as path_join
-import logging as LOG
+import logging
 import sqlite3
 #from sqlcipher3 import dbapi2 as sqlcipher
 
 from libretro.protocol import Proto
 from libretro.crypto import random_buffer
+
+
+LOG = logging.getLogger(__name__)
 
 """\
 Holds all userids and registration keys.

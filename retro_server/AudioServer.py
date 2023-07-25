@@ -1,5 +1,5 @@
 import threading
-import logging as LOG
+import logging
 import socket
 
 from time import sleep as time_sleep
@@ -16,6 +16,8 @@ security is implemented. The voicecalls are end-to-end
 encrypted by the calling partners.
 
 """
+
+LOG = logging.getLogger(__name__)
 
 class AudioServer(threading.Thread):
 

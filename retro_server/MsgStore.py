@@ -1,9 +1,12 @@
 from os.path import join as path_join
-import logging as LOG
+import logging
 import sqlite3
 #from sqlcipher3 import dbapi2 as sqlcipher
 
 from libretro.protocol import Proto
+
+
+LOG = logging.getLogger(__name__)
 
 
 """\
@@ -23,7 +26,6 @@ with the following schema:
   packet is the packet buffer
 
 """
-
 class MsgStore:
 
 	CREATE_TABLE_MSG = '''CREATE TABLE IF NOT EXISTS msg (

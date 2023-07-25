@@ -5,7 +5,7 @@ from os import stat as os_stat
 
 import struct
 import threading
-import logging as LOG
+import logging
 
 from libretro.protocol import Proto
 from . TLSListener import TLSListener
@@ -17,6 +17,7 @@ and the server. It is implemented for running as a thread.
 
 """
 
+LOG = logging.getLogger(__name__)
 
 class FileServer(threading.Thread):
 

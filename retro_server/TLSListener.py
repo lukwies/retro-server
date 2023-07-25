@@ -1,9 +1,10 @@
 from socket import socket, AF_INET, SOCK_STREAM, create_connection
 from ssl import SSLContext, PROTOCOL_TLS_SERVER, SSLError
-import logging as LOG
+import logging
 
 from libretro.net import NetClient, can_read
 
+LOG = logging.getLogger(__name__)
 
 class TLSListener:
 

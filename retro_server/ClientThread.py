@@ -3,8 +3,8 @@ from os.path import join as path_join
 from os.path import exists as path_exists
 from threading import Thread
 from time import sleep as time_sleep
-import logging as LOG
 from base64 import b64encode,b64decode
+import logging
 
 from libretro.protocol import *
 from libretro.crypto import RetroPublicKey
@@ -18,6 +18,8 @@ The client thread is started after a client has been
 accepted by the RetroServer.
 
 """
+
+LOG = logging.getLogger(__name__)
 
 class ClientThread(Thread):
 
