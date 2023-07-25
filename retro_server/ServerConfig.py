@@ -1,7 +1,9 @@
 import configparser
 from os.path import join as path_join
-import logging as LOG
+import logging
 
+
+LOG = logging.getLogger(__name__)
 
 """\
 Server config context.
@@ -27,13 +29,13 @@ class ServerConfig:
 		self.userdir   = path_join(basedir, "users")
 		self.uploaddir = path_join(basedir, "uploads")
 		self.msgdir    = path_join(basedir, "msg")
-		self.loglevel  = LOG.INFO
-		self.logformat = '%(levelname)s  %(message)s'
-		self.logfile   = None
+		self.loglevel  = logging.INFO
+		self.logfile   = path_join(basedir, "log.txt")
 		self.daemonize = False
-		self.pidfile   = "/run/retro_server.pid"
-		self.recv_timeout = 5
-		self.accept_timeout = 5
+		self.daemondir = "/"
+		self.pidfile   = path_join(basedir, "retro_server.pid")
+		self.recv_timeout   = 10
+		self.accept_timeout = 3
 
 		# [server]
 		self.server_address  = "0.0.0.0"
@@ -63,13 +65,13 @@ class ServerConfig:
 						conf.get('default', 'loglevel',
 							fallback='INFO'))
 			self.logfile  = conf.get('default', 'logfile',
-					fallback=None)
-			self.logformat = conf.get('default', 'logformat',
-					fallback=self.logformat)
+					fallback=self.logfile)
 			self.daemonize = conf.getboolean('default',
 					'daemonize', fallback=False)
+			self.daemondir = conf.get('default', 'daemondir',
+					fallback=self.daemondir)
 			self.pidfile = conf.get('default', 'pidfile',
-					fallback=None)
+					fallback=self.pidfile)
 			self.userdir = conf.get('default', 'userdir',
 					fallback=self.userdir)
 			self.uploaddir = conf.get('default', 'uploaddir',
@@ -112,14 +114,6 @@ class ServerConfig:
 			self.audioserver_port = conf.getint('audioserver',
 				'port', fallback=self.audioserver_port)
 
-			# Init logging
-			if self.logfile:
-				LOG.basicConfig(level=self.loglevel,
-					format=self.logformat,
-					filename=self.logfile,
-					encoding='utf-8')
-			else:	LOG.basicConfig(level=self.loglevel,
-					format=self.logformat)
 			return True
 		except configparser.NoOptionError as e:
 			LOG.error("Failed to load config file '{}': {}"\
@@ -136,7 +130,6 @@ class ServerConfig:
 		LOG.debug("[default]")
 		LOG.debug("  loglevel       = {}".format(self.loglevel))
 		LOG.debug("  logfile        = {}".format(self.logfile))
-		LOG.debug("  logformat      = '{}'".format(self.logformat))
 		LOG.debug("  daemonize      = {}".format(self.daemonize))
 		LOG.debug("  pidfile        = {}".format(self.pidfile))
 		LOG.debug("  userdir        = {}".format(self.userdir))
@@ -168,10 +161,10 @@ class ServerConfig:
 			ValueError: If unsupported level string
 		"""
 		levels = {
-			'error' : LOG.ERROR,
-			'warning' : LOG.WARNING,
-			'info'    : LOG.INFO,
-			'debug'   : LOG.DEBUG
+			'error'   : logging.ERROR,
+			'warning' : logging.WARNING,
+			'info'    : logging.INFO,
+			'debug'   : logging.DEBUG
 		}
 		levstr = loglevel_str.lower()
 		if levstr not in levels:
