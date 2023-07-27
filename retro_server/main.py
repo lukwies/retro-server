@@ -1,5 +1,4 @@
 import sys
-import logging as LOG
 from getopt import getopt, GetoptError
 
 from . ServerConfig import *
@@ -55,13 +54,12 @@ def main():
 		print("! Missing basedir (-c <basedir>)")
 		return
 
-	# Read server config from <basedir>/config.txt
-	config = ServerConfig(basedir)
-	if not config.read_file():
-		return False
+	# Init server and load settings
+	server = RetroServer(basedir)
+	if not server.load():
+		return
 
-	server = RetroServer(config)
-
+	# Create registration key or run server
 	if regkey_file:
 		server.create_registration_key(regkey_file)
 	else:	server.run()
